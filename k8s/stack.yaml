@@ -1,0 +1,823 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: fiapx
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rabbit-data
+  namespace: fiapx
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: fiapx
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: fiapx
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: fiapx
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: fiapx
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: DB_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: DB_PASSWORD
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgres-data
+      - name: init
+        configMap:
+          name: db-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+  - name: db
+    port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:3.13-management-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5672
+        env:
+        - name: RABBITMQ_DEFAULT_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_USER
+        - name: RABBITMQ_DEFAULT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_PASSWORD
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rabbitmq
+        command:
+        - sh
+        - -c
+        args:
+        - rabbitmq-plugins enable --offline rabbitmq_prometheus && rabbitmq-server
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: rabbit-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: rabbitmq
+  ports:
+  - name: amqp
+    port: 5672
+    targetPort: 5672
+  - name: management
+    port: 15672
+    targetPort: 15672
+  - name: metrics
+    port: 15692
+    targetPort: 15692
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        command:
+        - redis-server
+        args:
+        - --appendonly
+        - 'yes'
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+  - name: redis
+    port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9000
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: S3_ACCESS_KEY
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: S3_SECRET_KEY
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        command:
+        - minio
+        args:
+        - server
+        - /data
+        - --console-address
+        - :9001
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: minio-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+  - name: s3
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailpit
+  template:
+    metadata:
+      labels:
+        app: mailpit
+    spec:
+      containers:
+      - name: mailpit
+        image: axllent/mailpit:v1.27
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8025
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: mailpit
+  ports:
+  - name: smtp
+    port: 1025
+    targetPort: 1025
+  - name: ui
+    port: 8025
+    targetPort: 8025
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-api
+  namespace: fiapx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: video-api
+  template:
+    metadata:
+      labels:
+        app: video-api
+    spec:
+      containers:
+      - name: video-api
+        image: fiapx/video-api:local
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_HOST
+          value: postgres
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: DB_PASSWORD
+        - name: RABBIT_HOST
+          value: rabbitmq
+        - name: RABBIT_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_USER
+        - name: RABBIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_PASSWORD
+        - name: S3_ENDPOINT
+          value: http://minio:9000
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: S3_ACCESS_KEY
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: S3_SECRET_KEY
+        - name: DB_NAME
+          value: fiapx
+        - name: REDIS_HOST
+          value: redis
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: JWT_SECRET
+        - name: REDIS_PORT
+          value: '6379'
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 45
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: video-api
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: video-api
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-processor
+  namespace: fiapx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: video-processor
+  template:
+    metadata:
+      labels:
+        app: video-processor
+    spec:
+      containers:
+      - name: video-processor
+        image: fiapx/video-processor:local
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8081
+        env:
+        - name: RABBIT_HOST
+          value: rabbitmq
+        - name: RABBIT_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_USER
+        - name: RABBIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_PASSWORD
+        - name: S3_ENDPOINT
+          value: http://minio:9000
+        - name: S3_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: S3_ACCESS_KEY
+        - name: S3_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: S3_SECRET_KEY
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8081
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8081
+          initialDelaySeconds: 45
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: video-processor
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: video-processor
+  ports:
+  - name: http
+    port: 8081
+    targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+      - name: notification-service
+        image: fiapx/notification-service:local
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8082
+        env:
+        - name: DB_HOST
+          value: postgres
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: DB_PASSWORD
+        - name: RABBIT_HOST
+          value: rabbitmq
+        - name: RABBIT_USER
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_USER
+        - name: RABBIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: RABBIT_PASSWORD
+        - name: DB_NAME
+          value: fiapx_notifications
+        - name: SMTP_HOST
+          value: mailpit
+        - name: MAIL_FROM
+          value: fiapx@localhost
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8082
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8082
+          initialDelaySeconds: 45
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: notification-service
+  ports:
+  - name: http
+    port: 8082
+    targetPort: 8082
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: fiapx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: config
+        configMap:
+          name: nginx-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: fiapx
+spec:
+  type: NodePort
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v3.5.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9090
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus/prometheus.yml
+          subPath: prometheus.yml
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+  - name: http
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:12.1.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: fiapx-secrets
+              key: GRAFANA_PASSWORD
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/grafana
+        - name: datasource
+          mountPath: /etc/grafana/provisioning/datasources/datasource.yml
+          subPath: datasource.yml
+          readOnly: true
+        - name: dashboard-provider
+          mountPath: /etc/grafana/provisioning/dashboards/provider.yml
+          subPath: provider.yml
+          readOnly: true
+        - name: dashboards
+          mountPath: /etc/grafana/dashboards/fiapx.json
+          subPath: fiapx.json
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: '2'
+            memory: 1Gi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: grafana-data
+      - name: datasource
+        configMap:
+          name: grafana-datasource
+      - name: dashboard-provider
+        configMap:
+          name: grafana-dashboard-provider
+      - name: dashboards
+        configMap:
+          name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: fiapx
+spec:
+  type: ClusterIP
+  selector:
+    app: grafana
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000

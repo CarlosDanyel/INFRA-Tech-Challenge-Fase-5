@@ -1,0 +1,64 @@
+name: Infra CI/CD
+on:
+  push:
+    branches: [release, master]
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce release to master
+        if: github.event_name == 'pull_request'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: test "$HEAD_REF" = release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate scripts and collection
+        run: |
+          bash -n scripts/*.sh
+          python3 -m py_compile scripts/smoke.py
+          python3 -m json.tool postman/fiapx.postman_collection.json > /dev/null
+      - name: Validate Docker Compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          rm .env
+      - name: Validate Kubernetes resources
+        run: |
+          python3 -m pip install pyyaml
+          python3 -c 'import yaml; d=list(yaml.safe_load_all(open("k8s/stack.yaml"))); assert d and all(x.get("kind") for x in d)'
+  deploy:
+    if: github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Kubernetes
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG_B64" | base64 --decode > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+      - uses: azure/setup-kubectl@v4
+      - name: Apply platform
+        env:
+          FIAPX_ALLOW_CLUSTER: "true"
+          FIAPX_ENV_FILE_B64: ${{ secrets.FIAPX_ENV_FILE_B64 }}
+        run: |
+          printf '%s' "$FIAPX_ENV_FILE_B64" | base64 --decode > .env
+          scripts/apply-k8s.sh --skip-build
+          rm .env
+          kubectl -n fiapx set image deployment/video-api video-api=ghcr.io/carlosdanyel/video-api-tech-challenge-fase-5:master
+          kubectl -n fiapx set image deployment/video-processor video-processor=ghcr.io/carlosdanyel/video-processor-tech-challenge-fase-5:master
+          kubectl -n fiapx set image deployment/notification-service notification-service=ghcr.io/carlosdanyel/notification-service-tech-challenge-fase-5:master
+          kubectl -n fiapx rollout restart deployment/video-api deployment/video-processor deployment/notification-service
+          kubectl -n fiapx rollout status deployment/video-api --timeout=300s
+          kubectl -n fiapx rollout status deployment/video-processor --timeout=300s
+          kubectl -n fiapx rollout status deployment/notification-service --timeout=300s
