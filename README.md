@@ -39,7 +39,7 @@ flowchart LR
     PROM --> G[Grafana]
 ```
 
-Nos três microsserviços, os fontes Java estão sob `src/main/java/techchallenge/fiapx/<serviço>` e os testes sob `src/test/java/techchallenge/fiapx/<serviço>`; os pacotes têm raiz `techchallenge.fiapx`.
+Nos três microsserviços, o código usa as pastas geradas `src/main/java/Tech_Challenge_Fase_5/video_api_Tech_Challenge_Fase_5`, `src/main/java/Tech_Challenge_Fase_5/video_processor_Tech_Challenge_Fase_5` e `src/main/java/Tech_Challenge_Fase_5/notification_service_Tech_Challenge_Fase_5`. Os testes espelham essa estrutura em `src/test/java`. Os pacotes Java usam exatamente esses nomes.
 
 Cada serviço organiza código em domínio, casos de uso, portas e adaptadores; os casos de uso dependem de interfaces e os adaptadores implementam PostgreSQL, Redis, S3, RabbitMQ e SMTP. A API é dona das tabelas `users`, `videos` e `outbox_events`; notificações é dona de `notifications` em outro banco. O processador é sem estado e usa arquivos temporários isolados por trabalho. MinIO é o armazenamento compartilhado, permitindo múltiplas réplicas sem volume de arquivos compartilhado.
 
