@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/docker-public-config.sh
+source scripts/repositories.sh
 if [ ! -f .env ]; then echo 'Create .env from .env.example first'; exit 1; fi
 context="$(kubectl config current-context)"
 if [ "$context" != docker-desktop ] && [ "${FIAPX_ALLOW_CLUSTER:-false}" != true ]; then
@@ -10,9 +11,9 @@ if [ "$context" != docker-desktop ] && [ "${FIAPX_ALLOW_CLUSTER:-false}" != true
 fi
 if [ "${1:-}" != --skip-build ]; then
   base="$(cd .. && pwd)"
-  docker build -t fiapx/video-api:local "$base/video-api-Tech-Challenge-Fase-5"
-  docker build -t fiapx/video-processor:local "$base/video-processor-Tech-Challenge-Fase-5"
-  docker build -t fiapx/notification-service:local "$base/notification-service-Tech-Challenge-Fase-5 "
+  docker build -t fiapx/video-api:local "$(resolve_repository "$base" video-api-Tech-Challenge-Fase-5)"
+  docker build -t fiapx/video-processor:local "$(resolve_repository "$base" video-processor-Tech-Challenge-Fase-5)"
+  docker build -t fiapx/notification-service:local "$(resolve_repository "$base" notification-service-Tech-Challenge-Fase-5)"
 fi
 kubectl create namespace fiapx --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n fiapx create secret generic fiapx-secrets --from-env-file=.env --dry-run=client -o yaml | kubectl apply -f -

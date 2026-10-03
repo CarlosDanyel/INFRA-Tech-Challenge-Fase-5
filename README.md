@@ -1,6 +1,6 @@
-# FIAP X — Hackathon Fase 5
+# FIAP — Hackathon Fase 5
 
-Sistema de processamento assíncrono de vídeos. Autor: Carlos Danyel Silva Teixeira, RM368169. A implementação atende ao enunciado do PDF `POSTECH SOAT Fase 5 (2).pdf` e preserva a regra do projeto base: extrair **um frame PNG por segundo** e entregar os frames em um **ZIP**.
+Sistema de processamento assíncrono de vídeos. O usuário cria uma conta, envia vídeos, acompanha o estado de cada processamento e baixa um arquivo ZIP com **um frame PNG por segundo**. Falhas geram uma notificação por e-mail. Autor: Carlos Danyel Silva Teixeira, RM368169.
 
 ## Repositórios
 
@@ -10,8 +10,6 @@ Sistema de processamento assíncrono de vídeos. Autor: Carlos Danyel Silva Teix
 | API | [video-api-Tech-Challenge-Fase-5](https://github.com/CarlosDanyel/video-api-Tech-Challenge-Fase-5) | Usuários, autenticação, upload, status, download, PostgreSQL e outbox |
 | Processador | [video-processor-Tech-Challenge-Fase-5](https://github.com/CarlosDanyel/video-processor-Tech-Challenge-Fase-5) | FFmpeg, ZIP e publicação de resultado |
 | Notificações | [notification-service-Tech-Challenge-Fase-5](https://github.com/CarlosDanyel/notification-service-Tech-Challenge-Fase-5) | E-mail de falha e histórico de entrega |
-
-O endereço real do remoto local de notificações é `notification-service-Tech-Challenge-Fase-5`, sem o hífen inicial que aparece no texto preliminar. As pastas locais de infra e notificações têm um espaço no final do nome; use aspas em comandos manuais.
 
 ## Arquitetura
 
@@ -56,7 +54,7 @@ Status possíveis: `QUEUED → PROCESSING → COMPLETED` ou `FAILED`. `POST /api
 
 O padrão de entrega é **pelo menos uma vez**. Uma interrupção entre a confirmação do RabbitMQ e a atualização da outbox pode repetir a mensagem; consumidores tratam duplicação por estado/ID. Um e-mail pode ser reenviado se o processo cair entre o envio SMTP e o commit da entrega. O ambiente local usa instâncias únicas de PostgreSQL, RabbitMQ e MinIO; em produção, use serviços gerenciados ou réplicas/quorum e backup.
 
-## Requisitos do PDF
+## Funcionalidades e requisitos técnicos
 
 | Requisito | Implementação / evidência |
 | --- | --- |
@@ -68,46 +66,60 @@ O padrão de entrega é **pelo menos uma vez**. Uma interrupção entre a confir
 | Persistência | PostgreSQL para entidades, MinIO para arquivos, volumes persistentes; Redis como cache |
 | Escalabilidade | Serviços independentes e réplicas da API/processador; armazenamento de objetos |
 | Testes | Gradle/JUnit em cada serviço; teste real de FFmpeg/ZIP; `scripts/smoke.sh` |
-| CI/CD | GitHub Actions em cada repo, promoção `release → master`, GHCR e implantação opcional |
+| CI/CD | GitHub Actions em cada repositório, imagens GHCR e implantação opcional; entrega consolidada em `main` |
 | Monitoramento | Actuator/Micrometer, Prometheus, RabbitMQ exporter e Grafana |
 
-## Banco e recursos
+## Scripts de criação do banco de dados e dos recursos
 
-Os scripts versionados estão em [`db/init.sql`](db/init.sql), [`db/schema-api.sql`](db/schema-api.sql), [`db/schema-notifications.sql`](db/schema-notifications.sql), [migração da API](https://github.com/CarlosDanyel/video-api-Tech-Challenge-Fase-5/blob/release/src/main/resources/db/migration/V1__initial.sql) e [migração de notificações](https://github.com/CarlosDanyel/notification-service-Tech-Challenge-Fase-5/blob/release/src/main/resources/db/migration/V1__notifications.sql). `db/init.sql` cria `fiapx_notifications` na primeira inicialização do PostgreSQL; os dois arquivos `schema-*.sql` são cópias para consulta dos scripts Flyway mantidos por cada serviço. Flyway cria e valida as tabelas ao iniciar cada serviço. A API cria automaticamente o bucket `videos` no MinIO durante a inicialização. As configurações RabbitMQ no código declaram exchanges, bindings e filas duráveis.
+| Arquivo | Função | Quando é executado |
+| --- | --- | --- |
+| [`db/init.sql`](db/init.sql) | Cria o banco `fiapx_notifications`; o banco `fiapx` é criado por `POSTGRES_DB` | O PostgreSQL executa na primeira inicialização de um volume de dados vazio, tanto no Compose quanto no Kubernetes |
+| [`db/schema-api.sql`](db/schema-api.sql) | Define `users`, `videos`, `outbox_events` e índices | Cópia de referência da [migração Flyway da API](https://github.com/CarlosDanyel/video-api-Tech-Challenge-Fase-5/blob/main/src/main/resources/db/migration/V1__initial.sql), executada pela API ao iniciar |
+| [`db/schema-notifications.sql`](db/schema-notifications.sql) | Define `notifications` e seu índice | Cópia de referência da [migração Flyway de notificações](https://github.com/CarlosDanyel/notification-service-Tech-Challenge-Fase-5/blob/main/src/main/resources/db/migration/V1__notifications.sql), executada pelo serviço ao iniciar |
+| [`k8s/stack.yaml`](k8s/stack.yaml) | Cria Deployments, Services e volumes persistentes | Aplicado por `scripts/apply-k8s.sh` |
+| [`nginx/default.conf`](nginx/default.conf) e [`monitoring/`](monitoring/) | Configuram entrada HTTP e observabilidade | Convertidos em ConfigMaps por `scripts/apply-k8s.sh` |
 
-Todas as entidades persistidas incluem `created_at` e `updated_at`; o nome correto é **createdAt** e **updatedAt** no Java. `videos` também possui `version` para controle otimista de concorrência.
+Não execute os arquivos `schema-*.sql` manualmente antes de iniciar os serviços: Flyway mantém o histórico das migrações. O script `db/init.sql` só roda na criação inicial do volume PostgreSQL; reiniciar um banco existente não o executa novamente. A API cria o bucket `videos` no MinIO ao iniciar. Os serviços declaram as exchanges, filas e bindings duráveis do RabbitMQ durante a inicialização.
 
-## Preparação
+Todas as entidades persistidas têm `created_at` e `updated_at`, representados no Java por `createdAt` e `updatedAt`. A tabela `videos` também tem `version` para controle otimista de concorrência.
 
-Requisitos: Java 21, Docker Desktop com Kubernetes habilitado para implantação local, `kubectl`, FFmpeg para teste local, Python 3 e `curl`. Para executar só as dependências, Docker Compose é suficiente. Os scripts `run-local.sh` usam o Java 21 instalado no macOS via `/usr/libexec/java_home`.
+## Preparação e inicialização
+
+Requisitos: Java 21 disponível em `PATH` ou definido em `JAVA_HOME`, Docker com Compose, Python 3, FFmpeg e `curl`. Para Kubernetes local, habilite o Kubernetes no Docker Desktop e instale `kubectl`. Clone os quatro repositórios no mesmo diretório pai usando a branch `main`:
 
 ```bash
-cd '/Users/carlos-danyel/Desktop/PROJETOS/FASE 5/infra-Tech-Challenge-Fase-5 '
+mkdir fiap-video-platform
+cd fiap-video-platform
+git clone --branch main https://github.com/CarlosDanyel/INFRA-Tech-Challenge-Fase-5.git
+git clone --branch main https://github.com/CarlosDanyel/video-api-Tech-Challenge-Fase-5.git
+git clone --branch main https://github.com/CarlosDanyel/video-processor-Tech-Challenge-Fase-5.git
+git clone --branch main https://github.com/CarlosDanyel/notification-service-Tech-Challenge-Fase-5.git
+cd INFRA-Tech-Challenge-Fase-5
 cp .env.example .env
 ```
 
-Substitua **todos** os valores `replace-with...` de `.env`, especialmente `JWT_SECRET` com pelo menos 32 bytes aleatórios. Exemplo de geração: `openssl rand -hex 32`. Os scripts locais usam uma configuração temporária do Docker para baixar imagens públicas sem depender de credenciais do Docker Desktop; `DOCKER_CONFIG` existente é respeitado. O `.env` é ignorado pelo Git em todos os quatro repositórios; nunca o inclua em commits. Os `.env.example` de cada serviço documentam suas variáveis. No ambiente local, a API usa `DB_NAME=fiapx` e a porta 18080; PostgreSQL usa a porta 55433; notificações usa `DB_NAME=fiapx_notifications`; o processador não acessa o banco.
+Substitua todos os valores `replace-with...` em `.env`. Gere um `JWT_SECRET` com pelo menos 32 bytes aleatórios, por exemplo com `openssl rand -hex 32`. Não versione `.env`: ele está ignorado pelo Git nos quatro repositórios. Os `.env.example` dos serviços documentam suas variáveis. `run-local.sh` define `DB_NAME=fiapx` para a API, `DB_NAME=fiapx_notifications` para notificações e usa Java 21 de `JAVA_HOME` ou `PATH`. O processador não acessa o banco. O script configura temporariamente o Docker para baixar imagens públicas; se `DOCKER_CONFIG` já estiver definido, ele é respeitado.
 
 ### Início local com Docker Compose
 
-Terminal 1:
+No diretório `INFRA-Tech-Challenge-Fase-5`, inicie as dependências em containers e os três serviços Java:
 
 ```bash
 ./scripts/run-local.sh
 ```
 
-Terminal 2:
+Em outro terminal, no mesmo diretório, execute o fluxo completo e depois encerre o ambiente:
 
 ```bash
 FIAPX_MAILPIT_URL=http://localhost:8025 ./scripts/smoke.sh
 ./scripts/stop-local.sh
 ```
 
-`run-local.sh` sobe PostgreSQL, RabbitMQ, Redis, MinIO, Mailpit, Prometheus e Grafana em containers e executa os três JARs Java localmente. Logs: `/tmp/fiapx-18080.log`, `/tmp/fiapx-18081.log`, `/tmp/fiapx-18082.log`. O smoke test envia dois vídeos simultaneamente, verifica os ZIPs, força uma falha, tenta novamente e, com `FIAPX_MAILPIT_URL`, confirma o e-mail. A coleção [Postman](postman/fiapx.postman_collection.json) está neste repo e no repo da API. Se preferir iniciar manualmente, execute `docker compose up -d`, aguarde o MinIO responder em `/minio/health/live` e rode `./gradlew bootRun` em cada serviço com as variáveis de `.env` exportadas.
+`run-local.sh` sobe PostgreSQL, RabbitMQ, Redis, MinIO, Mailpit, Prometheus e Grafana em containers e executa os três JARs Java. A API fica em `http://localhost:18080`; o PostgreSQL usa a porta 55433 por padrão. Os logs dos serviços ficam em `/tmp/fiapx-18080.log`, `/tmp/fiapx-18081.log` e `/tmp/fiapx-18082.log`. O smoke test envia dois vídeos simultaneamente, verifica os ZIPs, força uma falha, tenta novamente e confirma o e-mail no Mailpit. A [coleção Postman](postman/fiapx.postman_collection.json) também está no repositório da API.
 
 ### Kubernetes no Docker Desktop
 
-Habilite Kubernetes no Docker Desktop e confira `kubectl config current-context` = `docker-desktop`. Em seguida:
+Habilite Kubernetes no Docker Desktop, confira se `kubectl config current-context` retorna `docker-desktop` e pare o ambiente Compose se ele estiver ocupando as mesmas portas. Em seguida:
 
 ```bash
 ./scripts/apply-k8s.sh
@@ -115,7 +127,7 @@ kubectl -n fiapx get pods
 FIAPX_URL=http://localhost:30080 ./scripts/smoke.sh
 ```
 
-O script constrói três imagens locais, cria namespace, Secret a partir de `.env`, ConfigMaps e os recursos em [`k8s/stack.yaml`](k8s/stack.yaml). NGINX atende `http://localhost:30080`, encaminha `/api/`, `/swagger-ui/` e `/v3/api-docs` à API e limita upload a 250 MB. Os endpoints de métricas não são encaminhados pelo NGINX. Para outro cluster, configure registry/imagens acessíveis e defina `FIAPX_ALLOW_CLUSTER=true` conscientemente. Os PVCs exigem uma StorageClass padrão. `kubectl -n fiapx port-forward svc/grafana 3000:3000` abre Grafana; `kubectl -n fiapx port-forward svc/mailpit 8025:8025` abre e-mails da demonstração.
+Para verificar também a entrega do e-mail, execute `kubectl -n fiapx port-forward svc/mailpit 8025:8025` em outro terminal e rode `FIAPX_URL=http://localhost:30080 FIAPX_MAILPIT_URL=http://localhost:8025 ./scripts/smoke.sh`. O script constrói três imagens locais, cria namespace, Secret a partir de `.env`, ConfigMaps e os recursos em [`k8s/stack.yaml`](k8s/stack.yaml). NGINX atende `http://localhost:30080`, encaminha `/api/`, `/swagger-ui/` e `/v3/api-docs` à API e limita upload a 250 MB. Os endpoints de métricas não são encaminhados pelo NGINX. Para outro cluster, configure registry e imagens acessíveis e defina `FIAPX_ALLOW_CLUSTER=true`. Os PVCs exigem uma StorageClass padrão. `kubectl -n fiapx port-forward svc/grafana 3000:3000` abre Grafana.
 
 A implantação usa duas réplicas da API e duas do processador. Para aumentar capacidade: `kubectl -n fiapx scale deployment/video-processor --replicas=4`. O banco, broker e armazenamento da demonstração são simples; produção exige configuração HA própria. Para SMTP real, ajuste `SMTP_HOST`, `SMTP_PORT` e autenticação do serviço de notificações e substitua Mailpit.
 
@@ -143,19 +155,12 @@ Observe `http_server_requests_seconds_count`, `jvm_memory_used_bytes`, `rabbitmq
 
 ## CI/CD e Git
 
-Cada serviço tem seu próprio [workflow GitHub Actions](https://github.com/CarlosDanyel/video-api-Tech-Challenge-Fase-5/tree/release/.github/workflows): testes/empacotamento, build e publicação da imagem GHCR. Este repo valida YAML, Compose, scripts e coleção. Push em `release` executa CI e publica imagem `:release`; PR para `master` só aceita origem `release`; push em `master` publica imagem por SHA e `:master`. Deploy automático só roda quando a variável de repositório `DEPLOY_ENABLED=true` e o segredo `KUBE_CONFIG_B64` estão configurados. Infra também usa `FIAPX_ENV_FILE_B64` (arquivo `.env` codificado em base64). Configure branch protection em `master` exigindo CI e PR; não faça merge direto. Para GHCR privado, crie `imagePullSecret` no namespace ou torne os packages acessíveis ao cluster. Um runner hospedado pelo GitHub precisa de um cluster alcançável pela rede; para o Kubernetes do Docker Desktop, use um runner próprio ou o script local.
+Cada serviço tem seu próprio workflow GitHub Actions: testes, empacotamento, build e publicação da imagem GHCR. O [workflow da infra](.github/workflows/ci-cd.yml) valida scripts, Compose, manifests Kubernetes e coleção Postman. Os workflows são executados em pushes para `release` e `master`; PRs para `master` aceitam apenas origem `release`. A branch `main` contém a entrega consolidada por merge direto e seus pushes não acionam esses workflows. Os testes locais e o smoke test acima permitem validar a versão publicada em `main`.
 
-Os quatro checkouts locais estavam inicialmente em `release`, com `main` legado. As branches `release` e `master` estão publicadas e os PRs de promoção estão abertos. Para concluir a configuração do fluxo, um administrador de cada repositório deve acessar **Settings → General → Default branch** e selecionar `master`, além de proteger `master` em **Settings → Branches** para exigir PR e CI. A conta usada para publicar o código possui permissão de escrita, mas não de administração; por isso, `main` ainda é a branch padrão no GitHub. Não há promoção automática nem credenciais embutidas no repositório.
+O deploy automático depende da variável de repositório `DEPLOY_ENABLED=true` e do segredo `KUBE_CONFIG_B64`. A infra também requer o segredo `FIAPX_ENV_FILE_B64`, que contém o `.env` codificado em base64. Para imagens GHCR privadas, configure um `imagePullSecret` no namespace ou disponibilize as imagens ao cluster. O runner precisa alcançar o cluster pela rede; o Kubernetes do Docker Desktop pode usar um runner próprio ou o script local. Nenhuma credencial fica no repositório.
 
 ## Testes e apresentação
 
-```bash
-for repo in '../video-api-Tech-Challenge-Fase-5' '../video-processor-Tech-Challenge-Fase-5' '../notification-service-Tech-Challenge-Fase-5 '; do
-  (cd "$repo" && JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew clean test)
-done
-./scripts/smoke.sh
-```
-
-Roteiro de apresentação em até 10 minutos: 0–2 min requisitos e diagrama; 2–4 min responsabilidades e outbox/RabbitMQ; 4–7 min cadastro, upload, status e ZIP; 7–8 min falha e Mailpit; 8–9 min testes/CI; 9–10 min Kubernetes e Grafana. O vídeo deve ser gravado após executar o sistema. A validação local e no Docker Desktop Kubernetes executou o smoke test com dois vídeos simultâneos, ZIPs, e-mail de falha e retry; Prometheus mostrou API, processador, notificações e RabbitMQ como `up`. Em uma simulação adicional, o RabbitMQ foi parado, um upload ficou `QUEUED` com evento pendente na outbox e passou a `COMPLETED` após a volta do broker.
+Execute `./gradlew clean test` em cada microsserviço. Após iniciar o ambiente, rode `./scripts/smoke.sh` a partir da infra. Ele verifica cadastro, processamento simultâneo, ZIPs, falha e retry; com `FIAPX_MAILPIT_URL` configurada, também confirma a notificação. Em Kubernetes, configure `FIAPX_URL` e `FIAPX_MAILPIT_URL` como mostrado acima. Para apresentar o sistema em até 10 minutos: mostre o diagrama e os requisitos; explique outbox, RabbitMQ e serviços; demonstre cadastro, upload, status e ZIP; provoque uma falha e confira o Mailpit; finalize com testes, CI, Kubernetes e Grafana.
 
 A imagem MinIO fixada no Compose/Kubernetes vem do [repositório de builds Coolify](https://github.com/coollabsio/minio), pois as imagens oficiais antigas foram retiradas dos registries. O código continua usando a API S3 e permite trocar o endpoint por outro serviço compatível.
